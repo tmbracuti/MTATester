@@ -128,15 +128,16 @@ def add_round_trip_data(workflow_name, rt_secs: float, rts):
 def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
     suf = 1
     round_trips = {}
-    user = props.get_value('sf_user', 'starfish_rest')
-    pwd = props.get_value('sf_pwd', 'Starfish@123')
+    # set Starfish MT REST API credentials
+    user = props.get_value('sf_user', '')
+    pwd = props.get_value('sf_pwd', '')
     tests_run = 0
     test_success = 0
     test_fail = 0
     abort_flag = 0
     for tline in test_inputs:
         if abort_flag == 1:
-            print('############### abort on fail flag set, ending test run ###############')
+            print('############### abort on fail flag is set, ending test run ###############')
             break
         tline = tline.rstrip()
         if tline[0] == '#':
