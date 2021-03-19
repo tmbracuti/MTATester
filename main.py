@@ -156,7 +156,6 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
         if t1 == -1:
             print(f'dispatch failed for request: {request_id}')
             test_fail += 1
-            # TODO: failout check
             if failout == 1:
                 abort_flag = 1
             continue
@@ -202,7 +201,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
             status = get_request_status(the_tenant, request_id)
 
             if status is None:
-                print(f'no status found for {request_id}, assuming that it failed')
+                print(f'no status found for {request_id}, assuming that it failed (hard)')
                 test_fail += 1
                 if failout == 1:
                     abort_flag = 1
