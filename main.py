@@ -140,10 +140,9 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
             print('############### abort on fail flag is set, ending test run ###############')
             break
         tline = tline.rstrip()
-        if tline == '':
-            break
-        if tline[0] == '#':
+        if tline == '' or tline[0] == '#':
             continue
+
         request_id = "REQ-%s.%d" % (rbase, suf)
         suf += 1
         tline = tline.replace('[x]', request_id)
