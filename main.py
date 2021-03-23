@@ -81,7 +81,6 @@ def mainline():
     cb.daemon = True
     cb.start()
 
-    # test_inputs = []
     with (open(test_file_name)) as f:
         test_inputs = f.readlines()
 
