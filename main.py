@@ -10,6 +10,7 @@ import json
 import pyodbc
 import tornado.options
 import numpy as np
+import parallel_driver
 
 from tornado.options import define, options
 
@@ -17,6 +18,7 @@ from tornado.options import define, options
 define("file", default="test_inputs.txt", help="the test file", type=str)
 define("keep", default=0, help="keep the timings=1, dump them=0", type=int)
 define("failout", default=0, help="die on failure=1, keep going=0", type=int)
+define("mode", default=0, help="synchronous=0, parallel by tenant=1", type=int)
 
 # disable insecure messages
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -69,6 +71,7 @@ def mainline():
     test_file_name = options.file
     keep_timings = options.keep
     failout = options.failout
+    mode = options.mode
     rbase = str(int(time.time()))
     print(f'Batch-Test base Id is {rbase}')
     props = properties.Properties("./mta.properties")
@@ -86,12 +89,13 @@ def mainline():
 
     print(f'{count_active_testlines(test_inputs)} test lines read from {test_file_name}')
 
-    if props.get_value("mode", "1") == "1":
+    if mode == 0:
         print('performing synchronous test plan')
-        sync_test(props, rbase, test_inputs, keep_timings, int(failout))
+        sync_test(props, rbase, test_inputs, keep_timings, int(failout), 0)
         print('all test items sent')
     else:
-        print('asynchronous mode not yet supported...change mode property to 1 and restart')
+        print('performing parallel request streams (parallel by tenant)')
+        parallel_test(props, rbase, test_inputs, keep_timings, int(failout))
 
 
 def dispatch_test_request(rid, test_body: str, uri_str: str, user: str, pwd: str):
@@ -124,7 +128,46 @@ def add_round_trip_data(workflow_name, rt_secs: float, rts):
         rts[workflow_name] = the_list
 
 
-def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
+def add_to_bucket(buckets: {}, line: str, tenant: str):
+    if tenant in buckets:
+        lines = buckets[tenant]
+        lines.append(line)
+    else:
+        lines = [line]
+        buckets[tenant] = lines
+
+
+def parallel_test(props, rbase, test_inputs, keep_timings, failout: int):
+    # create a bucket for each tenant
+    buckets = {}
+    for tline in test_inputs:
+        tline = tline.rstrip()
+        if tline == '' or tline[0] == '#':
+            continue
+        obj = json.loads(tline)
+        the_tenant = obj['TENANTID']
+        add_to_bucket(buckets, tline, the_tenant)
+    worker_list = []
+    for i, tenant in enumerate(buckets, 1):
+        # props, rbase, test_inputs, keep_timings, fail_out, tid, test_function
+        print(f'initializing test driver for tenant {tenant}')
+        t = parallel_driver.PDriver(props, f'{tenant}_{rbase}', buckets[tenant], keep_timings, failout, i, sync_test)
+        t.daemon = False
+        t.start()
+        worker_list.append(t)
+    print(f'{len(worker_list)} tenant test-workers are loaded')
+    for t in worker_list:
+        t.join()
+    for t in worker_list:
+        if t.res_tuple is not None:
+            last_tenant_handled, tests_run, test_success, test_fail = t.res_tuple
+            print(f'{last_tenant_handled} -> tests run: {tests_run}\tsuccesses: {test_success}\tfails: {test_fail}')
+    print("all parallel test workers are complete")
+    print("parallel test run is complete...exiting")
+
+
+def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int, tid: int):
+    last_tenant_handled = ''
     suf = 1
     round_trips = {}
     # set Starfish MT REST API credentials
@@ -147,6 +190,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
         tline = tline.replace('[x]', request_id)
         r_obj = json.loads(tline)
         the_tenant = r_obj['TENANTID']
+        last_tenant_handled = the_tenant # ignored on sync run, will be the tenant focused on in asycch
         the_wf = r_obj['WORKFLOW']
         t1 = dispatch_test_request(request_id, tline,
                                    props.get_value("sf_api", "https://192.168.52.52/MTWebService/api/User"), user, pwd)
@@ -174,7 +218,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
                     if failout == 1:
                         abort_flag = 1
                     print(f"{request_id} failed! Saving to file")
-                    write_fail_report_file(request_id, o, resp)
+                    write_fail_report_file(request_id, o, resp, the_tenant)
                 else:
                     print(f"{request_id} was successful - return time was {t2 - t1:.2f}")
                     test_success += 1
@@ -191,7 +235,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
                     print(f'in-run DB check of status for {request_id} was {status}, no callback will come')
                     msg = get_request_message(the_tenant, request_id)
                     if msg is not None:
-                        write_fail_file(request_id, msg)  # get the message column of sf_request
+                        write_fail_file(request_id, msg, the_tenant)  # get the message column of sf_request
                     break
                 time.sleep(5)  # seconds to wait
         if resp is None:
@@ -213,7 +257,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
                         abort_flag = 1
                     msg = get_request_message(the_tenant, request_id)  # get the message column of sf_request
                     if msg is not None:
-                        write_fail_file(request_id, msg)
+                        write_fail_file(request_id, msg, the_tenant)
             continue
     print(f"\nTEST RUN COMPLETE\ntest runs={tests_run}, test successes={test_success}, test fails={test_fail}\n")
     if len(round_trips) > 0:
@@ -226,11 +270,15 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int):
                 arr = np.array(lst)
                 print(f'Workflow {wf} mean round-trip secs: {arr.mean():.2f}, stddev={arr.std(ddof=1):.2f}')
         if keep_timings == 1:
-            write_timings(rbase, round_trips)
+            write_timings(rbase, round_trips, tid)
+    if tid != 0:  # asynchronous run
+        return last_tenant_handled, tests_run, test_success, test_fail
+    else:
+        return None
 
 
-def write_timings(rbase: str, round_trips: {}):
-    fname = f'{rbase}_timings.csv'
+def write_timings(rbase: str, round_trips: {}, tid: int):
+    fname = f'{rbase}_timings_{tid}.csv'
     with(open(fname, 'w')) as fout:
         for wf in round_trips:
             lst = round_trips[wf]
@@ -240,8 +288,8 @@ def write_timings(rbase: str, round_trips: {}):
     print(f'Timing data written to file: {fname}')
 
 
-def write_fail_report_file(request_id, obj, raw_resp):  # for actual failed callback (e.g. Final Failure status)
-    with(open(f"{request_id}.txt", 'w')) as f:
+def write_fail_report_file(request_id, obj, raw_resp, tenant_name):  # for actual failed callback (e.g. Final Failure status)
+    with(open(f"{tenant_name}_{request_id}.txt", 'w')) as f:
         for t in obj["SuccessfulTasks"]:
             f.write("Success " + t["TaskName"] + "\t" + t["TaskMessage"] + "\n")
         f.write("\n")
@@ -254,10 +302,10 @@ def write_fail_report_file(request_id, obj, raw_resp):  # for actual failed call
         f.flush()
 
 
-def write_fail_file(request_id, msg):  # for failure without callback data (e.g. Failure status)
+def write_fail_file(request_id, msg, tenant_name):  # for failure without callback data (e.g. Failure status)
     try:
         msg_o = json.loads(msg)
-        with(open(f"{request_id}.txt", 'w')) as f:
+        with(open(f"{tenant_name}_{request_id}.txt", 'w')) as f:
             for t in msg_o["SuccessTasks"]:
                 f.write("Success " + t["TaskName"] + "\t" + t["TaskReportText"] + "\n")
             f.write("\n")
