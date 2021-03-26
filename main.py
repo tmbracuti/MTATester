@@ -138,6 +138,8 @@ def add_to_bucket(buckets: {}, line: str, tenant: str):
 
 
 def parallel_test(props, rbase, test_inputs, keep_timings, failout: int):
+    # for sticklers: this is NOT parallel execution as we are on one core unless we convert to multiprocess
+    # as is, we are just concurrent
     # create a bucket for each tenant
     buckets = {}
     for tline in test_inputs:
@@ -158,10 +160,28 @@ def parallel_test(props, rbase, test_inputs, keep_timings, failout: int):
     print(f'{len(worker_list)} tenant test-workers are loaded')
     for t in worker_list:
         t.join()
+    map_of_rt_maps = {}  # maps tenant to their round_trip data
     for t in worker_list:
         if t.res_tuple is not None:
-            last_tenant_handled, tests_run, test_success, test_fail = t.res_tuple
+            last_tenant_handled, tests_run, test_success, test_fail, rt_map = t.res_tuple
+            map_of_rt_maps[last_tenant_handled] = rt_map
             print(f'{last_tenant_handled} -> tests run: {tests_run}\tsuccesses: {test_success}\tfails: {test_fail}')
+    print()
+    print('Performance statistics by tenant and workflow -- ')
+    for tenant in map_of_rt_maps:
+        round_trips = map_of_rt_maps[tenant]
+        if len(round_trips) == 0:
+            print(f'no data for tenant: {tenant}! This is likely a major malfunction.\n')
+            continue
+        for wf in round_trips:
+            lst = round_trips[wf]
+            if len(lst) == 1:
+                print(f'{tenant}: workflow {wf.upper()} mean round-trip secs: {lst[0]:.2f}')
+            else:
+                arr = np.array(lst)
+                print(f'{tenant}: workflow {wf.upper()} mean round-trip secs: {arr.mean():.2f}, stddev={arr.std(ddof=1):.2f}')
+        print()
+
     print("all parallel test workers are complete")
     print("parallel test run is complete...exiting")
 
@@ -190,7 +210,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int, tid: i
         tline = tline.replace('[x]', request_id)
         r_obj = json.loads(tline)
         the_tenant = r_obj['TENANTID']
-        last_tenant_handled = the_tenant # ignored on sync run, will be the tenant focused on in asycch
+        last_tenant_handled = the_tenant  # ignored on sync run, will be the tenant focused on in asycch
         the_wf = r_obj['WORKFLOW']
         t1 = dispatch_test_request(request_id, tline,
                                    props.get_value("sf_api", "https://192.168.52.52/MTWebService/api/User"), user, pwd)
@@ -272,7 +292,7 @@ def sync_test(props, rbase, test_inputs, keep_timings: int, failout: int, tid: i
         if keep_timings == 1:
             write_timings(rbase, round_trips, tid)
     if tid != 0:  # asynchronous run
-        return last_tenant_handled, tests_run, test_success, test_fail
+        return last_tenant_handled, tests_run, test_success, test_fail, round_trips
     else:
         return None
 
