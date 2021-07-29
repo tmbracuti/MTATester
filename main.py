@@ -99,7 +99,7 @@ def mainline():
 
 
 def dispatch_test_request(rid, test_body: str, uri_str: str, user: str, pwd: str):
-    # print(test_body)
+    # print(test_body) - remove when building prod
     headers = {'Content-Type': 'application/json;charset=UTF-8',
                'Connection': 'Keep-Alive', 'Accept-Encoding': 'gzip,deflate, br'}
     
