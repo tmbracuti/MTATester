@@ -65,7 +65,7 @@ def load_tenant_conn_map(props):
 
 
 # can be run as
-# python main.py or python main.py --file=<filename> to specify a test file
+# python main.py or python main.py --file=<filename>
 def mainline():
     tornado.options.parse_command_line()
     test_file_name = options.file
